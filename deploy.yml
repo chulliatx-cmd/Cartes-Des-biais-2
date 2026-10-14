@@ -1,0 +1,54 @@
+# Publication de Cognitive Atlas sur GitHub Pages.
+# À chaque envoi sur la branche main (par exemple un nouveau biases.json) :
+#   1. biases.json est validé ; s'il est invalide, rien n'est publié et le site actuel reste en ligne ;
+#   2. le numéro de commit est inscrit dans index.html pour forcer le rechargement des fichiers ;
+#   3. la version autonome cognitive-atlas.html est reconstruite ;
+#   4. le site est déployé.
+# Réglage requis une fois : Settings › Pages › Build and deployment › Source = « GitHub Actions ».
+name: Publier sur GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Valider biases.json
+        run: node tools/validate-biases.mjs
+      - name: Préparer le site
+        run: |
+          mkdir -p _site
+          cp index.html data.js content.js app.js editor.js biases.json _site/
+          BUILD="$(echo "$GITHUB_SHA" | cut -c1-8)"
+          sed -i "s/__BUILD__/${BUILD}/g" _site/index.html
+          node tools/build-standalone.mjs _site/index.html _site/cognitive-atlas.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
