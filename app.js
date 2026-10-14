@@ -144,32 +144,135 @@ function build(){
     });
   });
 
-  // cerveau stylisé
-  const br = mk("g", { class: "brain", transform: "translate(-4,-6) scale(1.02)" }, layers.brain);
-  mk("path", { class: "shell", d: "M-102,18 C-118,-30 -92,-82 -38,-94 C2,-104 58,-98 90,-64 C116,-38 120,0 106,26 C98,42 82,50 64,50 C58,66 44,76 26,72 C8,68 -6,60 -22,62 C-54,68 -88,56 -102,18 Z" }, br);
-  [
-    "M4,-98 C-4,-70 14,-48 2,-20 C-6,0 6,14 2,30",
-    "M-78,26 C-44,6 6,12 40,0 C62,-8 80,-6 96,2",
-    "M-60,-74 C-46,-52 -64,-34 -48,-12",
-    "M-30,-90 C-22,-70 -38,-52 -22,-30 C-12,-16 -26,-2 -16,12",
-    "M34,-92 C26,-72 44,-58 34,-38 C26,-22 42,-12 34,-2",
-    "M64,-76 C56,-58 72,-46 64,-26",
-    "M-96,-10 C-80,-20 -76,-40 -86,-56",
-    "M-70,44 C-58,34 -40,40 -30,30",
-    "M8,48 C22,40 40,46 54,36",
-    "M84,-40 C96,-30 100,-14 92,-6"
-  ].forEach(d => mk("path", { d }, br));
-  mk("path", { d: "M54,52 C70,48 90,52 92,62 C92,76 70,80 54,74 C46,70 46,58 54,52 Z" }, br);
-  mk("path", { d: "M58,60 C70,58 82,60 88,64 M56,68 C68,68 80,70 86,70" }, br);
-  mk("path", { d: "M30,72 C34,84 34,96 40,110 M44,70 C46,84 48,98 52,110" }, br);
-  [[-60,-40],[-14,-60],[30,-50],[70,-30],[-40,10],[16,-6],[60,20],[-80,0]].forEach(([x, y], i) => {
-    mk("circle", { cx: x, cy: y, r: 2, class: "syn", style: `animation-delay:${(i * .5).toFixed(1)}s` }, br);
-  });
+  // cerveau : gravure scientifique générée (lignes de flux continues à l'intérieur de la silhouette)
+  drawBrain(layers.brain);
   const hint = mk("text", { x: 0, y: R_RING + 40, class: "brain-hint", "text-anchor": "middle" }, layers.brain);
   hint.textContent = BIASES.length + " biais · 20 mécanismes";
 
   // halo sélection
-  S.haloEl = mk("circle", { r: 7, class: "halo", style: "--c:var(--fg)", opacity: 0 }, layers.halo);
+  S.haloEl = mk("circle", { r: 7, class: "halo", style: "--c:var(--fg);opacity:0" }, layers.halo);
+}
+
+/* ---------- Cerveau ----------
+   Un amas de neurones qui dessine la silhouette d'un cerveau (vue latérale) :
+   points répartis régulièrement dans la forme, reliés à leurs voisins, quelques
+   corps cellulaires avec dendrites, et des influx qui circulent. Chaque neurone
+   prend la couleur de la famille de biais située dans sa direction sur la carte.
+   Généré une fois, de façon déterministe. */
+const BRAIN = { groups: {} };
+function drawBrain(parent){
+  const SHELL = "M-114,6 C-120,-30 -102,-66 -68,-86 C-38,-104 6,-110 42,-101 C76,-92 104,-68 114,-36 C121,-12 118,12 106,30 C96,44 80,50 63,48 C51,47 41,46 31,52 C15,62 -10,66 -31,62 C-52,58 -64,48 -70,38 C-80,42 -92,40 -102,32 C-110,26 -114,16 -114,6 Z";
+  const CEREB = "M42,54 C56,45 92,41 105,51 C114,59 108,76 91,82 C72,88 52,84 44,74 C39,67 39,59 42,54 Z";
+  const STEM = "M26,58 C31,76 32,96 29,116 L46,116 C43,100 43,86 47,72 Z";
+  const GAPS = ["M-68,33 C-44,16 -10,9 22,5 C44,2 60,-6 76,-16", "M10,-107 C3,-84 17,-63 8,-43 C1,-28 11,-15 4,1"];
+  const OX = -2, OY = -16;
+
+  let seed = 11;
+  const rnd = () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const ctx = document.createElement("canvas").getContext("2d");
+  const shapes = [SHELL, CEREB, STEM].map(d => new Path2D(d));
+  const inside = (x, y) => shapes.some(s => ctx.isPointInPath(s, x, y));
+  const sampler = document.createElementNS(NS, "path");
+  const along = (d, step, fn) => { sampler.setAttribute("d", d); const L = sampler.getTotalLength(); for (let t = 0; t < L; t += step) { const q = sampler.getPointAtLength(t); fn(q.x, q.y); } };
+  const gapPts = []; GAPS.forEach(d => along(d, 2, (x, y) => gapPts.push([x, y])));
+  const nearGap = (x, y) => gapPts.some(([a, b]) => (a - x) ** 2 + (b - y) ** 2 < 16);
+
+  // répartition régulière (échantillonnage de Poisson simplifié)
+  const P = [], CELL = 4, grid = new Map();
+  const gk = (x, y) => ((x / CELL) | 0) + "," + ((y / CELL) | 0);
+  const free = (x, y, d) => {
+    const cx = (x / CELL) | 0, cy = (y / CELL) | 0, n = Math.ceil(d / CELL);
+    for (let i = -n; i <= n; i++) for (let j = -n; j <= n; j++) for (const q of grid.get((cx + i) + "," + (cy + j)) || []) if ((q.x - x) ** 2 + (q.y - y) ** 2 < d * d) return false;
+    return true;
+  };
+  const put = (x, y, edge) => { const q = { x, y, edge }; P.push(q); const k = gk(x, y); (grid.get(k) || grid.set(k, []).get(k)).push(q); };
+  [SHELL, CEREB].forEach(d => along(d, 6.5, (x, y) => free(x, y, 5) && put(x + (rnd() - .5) * 1.2, y + (rnd() - .5) * 1.2, true)));
+  GAPS.forEach(d => along(d, 9, (x, y) => free(x, y, 6) && put(x, y, true)));
+  for (let n = 0; n < 9000; n++) {
+    const x = -118 + rnd() * 236, y = -112 + rnd() * 232;
+    if (inside(x, y) && !nearGap(x, y) && free(x, y, 7.4)) put(x, y, false);
+  }
+
+  // couleur : la famille dont le secteur de la carte contient la direction du neurone
+  const catAt = (x, y) => {
+    let a = Math.atan2(x + OX, -(y + OY)) * 180 / Math.PI; if (a < 0) a += 360;
+    return CATS.find(c => a >= c.a0 - 3 && a <= c.a1 + 3) || CATS.reduce((m, c) => Math.min(Math.abs(c.am - a), 360 - Math.abs(c.am - a)) < Math.min(Math.abs(m.am - a), 360 - Math.abs(m.am - a)) ? c : m);
+  };
+  P.forEach(q => q.cat = catAt(q.x, q.y));
+
+  // connexions : chaque neurone vers ses 3 plus proches voisins
+  const edges = new Set(), E = [];
+  P.forEach((q, i) => {
+    const near = [];
+    const cx = (q.x / CELL) | 0, cy = (q.y / CELL) | 0;
+    for (let a = -5; a <= 5; a++) for (let b = -5; b <= 5; b++) for (const r of grid.get((cx + a) + "," + (cy + b)) || []) if (r !== q) near.push([(r.x - q.x) ** 2 + (r.y - q.y) ** 2, r]);
+    near.sort((u, v) => u[0] - v[0]);
+    near.slice(0, 3).forEach(([d2, r]) => {
+      if (d2 > 260) return;
+      const j = P.indexOf(r), key = i < j ? i + "-" + j : j + "-" + i;
+      if (edges.has(key)) return;
+      edges.add(key); E.push([q, r]);
+    });
+  });
+
+  const g = mk("g", { class: "brain3", transform: `translate(${OX},${OY})` }, parent);
+  const D = svg.querySelector("defs") || mk("defs", {}, svg);
+  const glow = mk("radialGradient", { id: "brainGlow", cx: "50%", cy: "50%", r: "50%" }, D);
+  [["0", ".13"], [".55", ".04"], ["1", "0"]].forEach(([o, a]) => mk("stop", { offset: o, "stop-color": "#74A9E8", "stop-opacity": a }, glow));
+  mk("ellipse", { cx: 0, cy: 0, rx: 150, ry: 130, style: "fill:url(#brainGlow)" }, g);
+
+  CATS.forEach(c => {
+    const cg = mk("g", { style: `--c:${c.color};transition:opacity .35s` }, g);
+    BRAIN.groups[c.id] = cg;
+    // axones / connexions
+    const d = E.filter(([a]) => a.cat === c).map(([a, b]) => `M${a.x.toFixed(1)},${a.y.toFixed(1)} L${b.x.toFixed(1)},${b.y.toFixed(1)}`).join("");
+    mk("path", { d, style: "fill:none;stroke:var(--c);stroke-opacity:.28;stroke-width:.8;vector-effect:non-scaling-stroke" }, cg);
+    // corps cellulaires
+    P.filter(q => q.cat === c).forEach(q => {
+      const big = !q.edge && rnd() < .09;
+      const r = big ? 2.4 + rnd() * 1.1 : q.edge ? 1.25 : .8 + rnd() * .85;
+      if (big) {
+        let dd = "";
+        const n = 3 + (rnd() * 3 | 0);
+        for (let k = 0; k < n; k++) {
+          const a = rnd() * Math.PI * 2, L = 6 + rnd() * 7, bend = (rnd() - .5) * 1.2;
+          const x2 = q.x + Math.cos(a) * L, y2 = q.y + Math.sin(a) * L;
+          const mx = q.x + Math.cos(a + bend) * L * .55, my = q.y + Math.sin(a + bend) * L * .55;
+          dd += `M${q.x.toFixed(1)},${q.y.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+          if (rnd() < .6) { const b2 = a + (rnd() < .5 ? .7 : -.7); dd += ` M${mx.toFixed(1)},${my.toFixed(1)} l${(Math.cos(b2) * L * .45).toFixed(1)},${(Math.sin(b2) * L * .45).toFixed(1)}`; }
+        }
+        mk("path", { d: dd, style: "fill:none;stroke:var(--c);stroke-opacity:.55;stroke-width:.9;stroke-linecap:round;vector-effect:non-scaling-stroke" }, cg);
+        mk("circle", { cx: q.x.toFixed(1), cy: q.y.toFixed(1), r: (r * 2.4).toFixed(1), style: "fill:var(--c);opacity:.12" }, cg);
+      }
+      mk("circle", { cx: q.x.toFixed(1), cy: q.y.toFixed(1), r: r.toFixed(2), style: `fill:var(--c);opacity:${big ? .95 : q.edge ? .8 : (.45 + rnd() * .4).toFixed(2)}` }, cg);
+    });
+  });
+
+  // influx : quelques impulsions qui parcourent des chaînes de connexions
+  const adj = new Map(); E.forEach(([a, b]) => { (adj.get(a) || adj.set(a, []).get(a)).push(b); (adj.get(b) || adj.set(b, []).get(b)).push(a); });
+  const pulses = mk("g", { class: "brain-pulses" }, g);
+  BRAIN.pulses = pulses;
+  const inner = P.filter(q => !q.edge);
+  for (let n = 0; n < 16; n++) {
+    let cur = inner[(rnd() * inner.length) | 0], prev = null;
+    const pts = [cur];
+    for (let k = 0; k < 9; k++) {
+      const opts = (adj.get(cur) || []).filter(o => o !== prev && !pts.includes(o));
+      if (!opts.length) break;
+      prev = cur; cur = opts[(rnd() * opts.length) | 0]; pts.push(cur);
+    }
+    if (pts.length < 4) continue;
+    const path = "M" + pts.map(q => q.x.toFixed(1) + "," + q.y.toFixed(1)).join(" L");
+    const dot = mk("circle", { r: 1.7, style: `fill:${pts[0].cat.hex};opacity:0` }, pulses);
+    const dur = (2.2 + rnd() * 2).toFixed(2), delay = (rnd() * 6).toFixed(2);
+    mk("animateMotion", { path, dur: dur + "s", begin: delay + "s", repeatCount: "indefinite" }, dot);
+    mk("animate", { attributeName: "opacity", values: "0;1;1;0", keyTimes: "0;.15;.8;1", dur: dur + "s", begin: delay + "s", repeatCount: "indefinite" }, dot);
+  }
+}
+function syncBrain(){
+  if (BRAIN.pulses) BRAIN.pulses.style.display = reduced() ? "none" : "";
+  const f = S.hover ? S.hover.cat : S.hoverGroup ? S.hoverGroup.cat : S.hoverCat || (S.sel ? S.sel.cat : S.cat);
+  for (const id in BRAIN.groups) BRAIN.groups[id].style.opacity = !f || f.id === id ? "1" : ".22";
 }
 
 /* ---------- Transformations ---------- */
@@ -253,12 +356,13 @@ function applyFocus(){
   else if (S.sel) biasFocus(S.sel);
   else if (S.cat) on.push(...EL.cat[S.cat.id]);
   svg.classList.toggle("focusing", on.length > 0);
+  syncBrain();
   near.forEach(e => e.classList.add("near"));
   on.forEach(e => { e.classList.remove("near"); e.classList.add("on"); });
   // halo
   const h = S.haloEl;
-  if (S.sel) { h.setAttribute("cx", S.sel.x); h.setAttribute("cy", S.sel.y); h.style.setProperty("--c", S.sel.cat.color); h.setAttribute("opacity", 1); h.classList.toggle("go", !reduced()); }
-  else { h.setAttribute("opacity", 0); h.classList.remove("go"); }
+  if (S.sel) { h.setAttribute("cx", S.sel.x); h.setAttribute("cy", S.sel.y); h.style.setProperty("--c", S.sel.cat.color); h.style.opacity = ""; h.classList.toggle("go", !reduced()); }
+  else { h.style.opacity = "0"; h.classList.remove("go"); }
   $$(".leaf.sel", svg).forEach(e => e.classList.remove("sel"));
   if (S.sel) EL.bias[S.sel.id].leaf.classList.add("sel");
 }
@@ -418,6 +522,7 @@ function syncMotion(){
   document.documentElement.classList.toggle("anim", !reduced());
   motionBtn.setAttribute("aria-pressed", String(reduced()));
   motionBtn.title = reduced() ? "Animations réduites (activé)" : "Réduire les animations";
+  syncBrain();
 }
 motionBtn.onclick = () => { S.reduce = !reduced(); store.set("reduce", S.reduce); syncMotion(); applyFocus(); toast(reduced() ? "Animations réduites" : "Animations activées"); };
 mqReduce.addEventListener?.("change", syncMotion);
